@@ -1,123 +1,140 @@
 <?php
-// Cấu hình Header trả về JSON để web sếp dễ đọc
 header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Origin: *'); // Cho phép mọi web gọi vào (CORS)
+header('Access-Control-Allow-Origin: *');
 
-// Lấy URL từ tham số ?url=...
 $url = $_GET['url'] ?? '';
 
 if (empty($url)) {
-    echo json_encode([
-        'status' => 'error',
-        'msg' => 'Vui long nhap URL TikTok (Vi du: ?url=https://vm.tiktok.com/...)'
-    ]);
+    echo json_encode(['status' => 'error', 'msg' => 'Vui long nhap URL']);
     exit;
 }
 
-// --- BẮT ĐẦU QUY TRÌNH XỬ LÝ ---
-$result = get_tiktok_master($url);
-echo json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+// --- ROUTER ---
+if (strpos($url, 'tiktok.com') !== false) {
+    $result = get_tiktok_master($url);
+} elseif (strpos($url, 'instagram.com') !== false) {
+    $result = get_instagram_master($url);
+} else {
+    $result = ['status' => 'error', 'msg' => 'Chi ho tro TikTok & Instagram'];
+}
+
+echo json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
 
 // ==========================================
-// HÀM ĐIỀU PHỐI (Commander)
+// CONTROLLERS
 // ==========================================
 function get_tiktok_master($tiktok_url) {
-    // ƯU TIÊN 1: SaveTik (Vì nó ổn định hơn)
-    $data = api_savetik($tiktok_url);
+    // 1. SaveTik
+    $data = api_general_scraper($tiktok_url, 'https://savetik.io/api/ajaxSearch', 'savetik.io');
     if ($data) return $data;
 
-    // ƯU TIÊN 2: LoveTik (Cứu nét)
-    $data = api_lovetik($tiktok_url);
-    if ($data) return $data;
-
-    // HẾT CÁCH
-    return [
-        'status' => 'error', 
-        'msg' => 'Server ban qua, vui long thu lai sau!'
-    ];
-}
-
-// ==========================================
-// API 1: SAVETIK
-// ==========================================
-function api_savetik($url) {
-    $api = 'https://savetik.io/api/ajaxSearch';
-    $post = http_build_query(['q' => $url, 'cursor' => '0', 'page' => '0', 'lang' => 'vi']);
-    return send_request($api, $post, 'savetik.io');
-}
-
-// ==========================================
-// API 2: LOVETIK
-// ==========================================
-function api_lovetik($url) {
-    // Bước 1: Lấy Cookie xịn từ LoveTik (Tránh bị chặn)
+    // 2. LoveTik
     $cookie = get_real_cookie('https://lovetik.app/vi');
-    
-    $api = 'https://lovetik.app/api/ajaxSearch';
-    $post = http_build_query(['q' => $url, 'lang' => 'vi']);
-    return send_request($api, $post, 'lovetik.app', $cookie);
+    $data = api_general_scraper($tiktok_url, 'https://lovetik.app/api/ajaxSearch', 'lovetik.app', $cookie);
+    if ($data) return $data;
+
+    return ['status' => 'error', 'msg' => 'Server TikTok ban het roi!'];
+}
+
+function get_instagram_master($ig_url) {
+    $data = api_general_scraper($ig_url, 'https://saveig.app/api/ajaxSearch', 'saveig.app');
+    if ($data) {
+        $data['platform'] = 'instagram';
+        return $data;
+    }
+    return ['status' => 'error', 'msg' => 'Instagram Server Ban!'];
 }
 
 // ==========================================
-// HÀM HỖ TRỢ (Core)
+// CORE SCRAPER (Đã Fix Regex Thumbnail)
 // ==========================================
+function api_general_scraper($target_url, $api_endpoint, $host, $cookie = null) {
+    $post_params = ['q' => $target_url, 'lang' => 'vi'];
+    if (strpos($host, 'savetik') !== false) {
+        $post_params['cursor'] = '0'; $post_params['page'] = '0';
+    }
+    if (strpos($host, 'saveig') !== false) {
+        $post_params['t'] = 'media'; $post_params['lang'] = 'en';
+    }
 
-// Hàm gửi request chuẩn Ninja
-function send_request($api_url, $post_data, $host, $cookie = null) {
-    $ch = curl_init($api_url);
+    $ch = curl_init($api_endpoint);
     curl_setopt($ch, CURLOPT_POST, 1);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($post_params));
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 10); // Timeout 10s
+    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
 
-    // Fake IP Header (Để lừa server gà)
     $rand_ip = mt_rand(1,255).".".mt_rand(0,255).".".mt_rand(0,255).".".mt_rand(0,255);
-    
-    // Nếu không có cookie xịn thì fake cookie đểu
-    if (!$cookie) {
-        $rand_id = bin2hex(random_bytes(16));
-        $cookie = "fpestid=$rand_id";
-    }
+    if (!$cookie) $cookie = "fpestid=".bin2hex(random_bytes(16));
     
     $headers = [
         'content-type: application/x-www-form-urlencoded; charset=UTF-8',
         'origin: https://' . $host,
-        'referer: https://' . $host . '/vi',
+        'referer: https://' . $host . '/',
         'user-agent: Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
         'x-forwarded-for: ' . $rand_ip,
-        'x-real-ip: ' . $rand_ip,
         'x-requested-with: XMLHttpRequest',
         "cookie: $cookie"
     ];
-    
     curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
 
     $res = curl_exec($ch);
-    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
 
-    // Nếu lỗi mạng hoặc HTTP lỗi -> Bỏ qua
-    if ($http_code != 200 || !$res) return null;
-
+    if (!$res) return null;
     $json = json_decode($res, true);
+
     if (isset($json['data'])) {
-        // Regex tìm link SnapCDN hoặc TiktokCDN
-        preg_match_all('#href="([^"]*(?:snapcdn.app|tiktokcdn.com)[^"]*)"#', $json['data'], $m);
-        if (!empty($m[1])) {
-            return [
-                'status' => 'success',
-                'source' => $host,
-                'video_url' => $m[1][0], // Link ngon nhất
-                'backup_url' => $m[1][1] ?? null
-            ];
+        $html = $json['data'];
+        $result = ['status' => 'success', 'source' => $host];
+
+        // 1. VIDEO URL (Lấy link snapcdn hoặc tiktokcdn)
+        preg_match('#href="([^"]*(?:snapcdn|fbcdn|instagram)[^"]*)"#', $html, $m_video);
+        if (empty($m_video[1])) {
+            // Backup: Lấy bất kỳ link nào có class download
+            preg_match('#href="([^"]+)"[^>]*class="[^"]*download[^"]*"#', $html, $m_video);
         }
+        if (empty($m_video[1])) return null; // Không có video thì hủy
+        $result['video_url'] = str_replace('&amp;', '&', $m_video[1]);
+
+
+        // 2. THUMBNAIL (Fix: Thử nhiều kiểu Regex)
+        // Kiểu 1: Tìm trong div image-tik (thường gặp nhất)
+        preg_match('#<div class="image-tik">.*?<img src="([^"]+)"#s', $html, $m_thumb);
+        
+        // Kiểu 2: Tìm thẻ img bất kỳ có src là tiktokcdn
+        if (empty($m_thumb[1])) {
+            preg_match('#<img[^>]+src="([^"]*tiktokcdn[^"]*)"#', $html, $m_thumb);
+        }
+        // Kiểu 3: Lấy đại thẻ img đầu tiên tìm thấy
+        if (empty($m_thumb[1])) {
+            preg_match('#<img[^>]+src="([^"]+)"#', $html, $m_thumb);
+        }
+        $result['cover'] = isset($m_thumb[1]) ? str_replace('&amp;', '&', $m_thumb[1]) : '';
+
+
+        // 3. DESC / TITLE (Fix: Thử nhiều kiểu)
+        // Kiểu 1: Thẻ h3
+        preg_match('#<h3>(.*?)</h3>#s', $html, $m_desc);
+        
+        // Kiểu 2: Thẻ p trong content
+        if (empty($m_desc[1])) {
+            preg_match('#<div class="content">.*?<p>(.*?)</p>#s', $html, $m_desc);
+        }
+        // Kiểu 3: Lấy từ alt của ảnh
+        if (empty($m_desc[1])) {
+             preg_match('#<img[^>]+alt="([^"]+)"#', $html, $m_desc);
+        }
+        
+        $desc_raw = $m_desc[1] ?? '';
+        $result['desc'] = trim(html_entity_decode(strip_tags($desc_raw)));
+
+        return $result;
     }
     return null;
 }
 
-// Hàm lấy Cookie thật (Chống chặn LoveTik)
 function get_real_cookie($url) {
     $ch = curl_init($url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -125,17 +142,13 @@ function get_real_cookie($url) {
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
     curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36');
     curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-    
     $res = curl_exec($ch);
-    $cookie_str = '';
-    
+    $cookie = '';
     if ($res) {
         preg_match_all('/^Set-Cookie:s*([^;]*)/mi', $res, $matches);
-        foreach($matches[1] as $item) {
-            $cookie_str .= $item . '; ';
-        }
+        foreach($matches[1] as $item) $cookie .= $item . '; ';
     }
     curl_close($ch);
-    return $cookie_str ? $cookie_str : "fpestid=".bin2hex(random_bytes(16));
+    return $cookie ? $cookie : "fpestid=".bin2hex(random_bytes(16));
 }
 ?>
