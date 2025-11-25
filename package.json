@@ -1,9 +1,8 @@
 {
   "name": "savetik-proxy",
   "version": "1.0.0",
-  "type": "module", 
   "dependencies": {
-    "node-fetch": "^3.3.2",
+    "node-fetch": "^2.6.7",
     "random-useragent": "^0.5.0"
   }
 }
