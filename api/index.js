@@ -1,40 +1,76 @@
-<?php
-header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Origin: *');
+import fetch from 'node-fetch';
+import randomUseragent from 'random-useragent';
 
-$url = $_GET['url'] ?? '';
+export default async function handler(req, res) {
+  // --- 1. BẢO MẬT (Chỉ cho phép Web của sếp gọi) ---
+  const allowedOrigins = ['https://snaptik.business', 'http://localhost:3000']; // Thay bằng domain thật của sếp
+  const origin = req.headers.origin;
+  
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    // Mở tạm cho mọi người test (Sau này sếp nên đóng lại bằng cách xóa dòng dưới)
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-if (empty($url)) {
-    echo json_encode(['status' => 'error', 'msg' => 'Vui long nhap URL']);
-    exit;
-}
+  // Xử lý preflight request của trình duyệt
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
 
-// --- ROUTER ---
-if (strpos($url, 'tiktok.com') !== false) {
-    $result = get_tiktok_master($url);
-} elseif (strpos($url, 'instagram.com') !== false) {
-    $result = get_instagram_master($url);
-} else {
-    $result = ['status' => 'error', 'msg' => 'Chi ho tro TikTok & Instagram'];
-}
+  // --- 2. LẤY URL TỪ REQUEST ---
+  // Chấp nhận cả GET (?url=...) và POST body
+  let tiktokUrl = '';
+  if (req.method === 'GET') {
+    tiktokUrl = req.query.url;
+  } else if (req.method === 'POST') {
+    const body = req.body;
+    tiktokUrl = body.url || body.q;
+  }
 
-echo json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+  if (!tiktokUrl) {
+    return res.status(400).json({ error: 'Thiếu URL TikTok (tham số ?url=)' });
+  }
 
+  try {
+    // --- 3. FAKE REQUEST SANG SAVETIK ---
+    const apiUrl = 'https://savetik.io/api/ajaxSearch';
+    const userAgent = randomUseragent.getRandom(); // Random UA mỗi lần gọi
 
-// ==========================================
-// CONTROLLERS
-// ==========================================
-function get_tiktok_master($tiktok_url) {
-    // 1. SaveTik
-    $data = api_general_scraper($tiktok_url, 'https://savetik.io/api/ajaxSearch', 'savetik.io');
-    if ($data) return $data;
+    const params = new URLSearchParams();
+    params.append('q', tiktokUrl);
+    params.append('lang', 'en');
 
-    // 2. LoveTik
-    $cookie = get_real_cookie('https://lovetik.app/vi');
-    $data = api_general_scraper($tiktok_url, 'https://lovetik.app/api/ajaxSearch', 'lovetik.app', $cookie);
-    if ($data) return $data;
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'User-Agent': userAgent,
+        'Referer': 'https://savetik.io/',
+        'Origin': 'https://savetik.io',
+        'Accept': '*/*',
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: params
+    });
 
-    return ['status' => 'error', 'msg' => 'Server TikTok ban het roi!'];
+    const data = await response.json();
+
+    // --- 4. TRẢ KẾT QUẢ VỀ ---
+    return res.status(200).json(data);
+
+  } catch (error) {
+    console.error('Lỗi Proxy:', error);
+    return res.status(500).json({ 
+      error: 'Lỗi khi gọi sang Savetik', 
+      details: error.message 
+    });
+  }
+}    return ['status' => 'error', 'msg' => 'Server TikTok ban het roi!'];
 }
 
 function get_instagram_master($ig_url) {
